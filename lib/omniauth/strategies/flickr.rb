@@ -7,6 +7,7 @@ module OmniAuth
     # An omniauth 1.0 strategy for Flickr authentication
     # Based on http://www.flickr.com/services/api/auth.oauth.html
     class Flickr < OmniAuth::Strategies::OAuth
+      MAXIMUM_RETRIES = 10
 
       option :name, 'flickr'
 
@@ -52,11 +53,19 @@ module OmniAuth
       # Return info gathered from the flickr.people.getInfo API call
 
       def raw_info
-        # This is a public API and does not need signing or authentication
-        request = "/services/rest/?format=json&method=flickr.people.getInfo&nojsoncallback=1&user_id=#{uid}"
-        @raw_info ||= MultiJson.decode(access_token.get(request).body)
-      rescue ::Errno::ETIMEDOUT
-        raise ::Timeout::Error
+        retries = 0
+        begin
+          # This is a public API and does not need signing or authentication
+          request = "/services/rest/?format=json&method=flickr.people.getInfo&nojsoncallback=1&user_id=#{uid}"
+          @raw_info ||= MultiJson.decode(access_token.get(request).body)
+        rescue ::Errno::ETIMEDOUT
+          raise ::Timeout::Error
+        rescue ::Errno::ECONNREFUSED => e
+          retries += 1
+          if retries <= MAXIMUM_RETRIES && e.message.match('Failed to open TCP connection')
+            retry
+          end
+        end
       end
 
       # Provide the "Person" portion of the raw_info
@@ -76,7 +85,27 @@ module OmniAuth
       def request_phase
         options[:authorize_params] = {:perms => options[:scope]} if options[:scope]
         session['oauth'] ||= {} # https://github.com/timbreitkreutz/omniauth-flickr/issues/4
-        super
+        retries = 0
+        begin
+          super
+        rescue ::Errno::ECONNREFUSED => e
+          retries += 1
+          if retries <= MAXIMUM_RETRIES && e.message.match('Failed to open TCP connection')
+            retry
+          end
+        end
+      end
+
+      def callback_phase
+        retries = 0
+        begin
+          super
+        rescue ::Errno::ECONNREFUSED => e
+          retries += 1
+          if retries <= MAXIMUM_RETRIES && e.message.match('Failed to open TCP connection')
+            retry
+          end
+        end
       end
 
       private
